@@ -2,23 +2,48 @@ package classes;
 
 // cc MaxTemperature Application to find the maximum temperature in the weather dataset
 // vv MaxTemperature
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileReader;
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.FloatWritable;
 import org.apache.hadoop.io.LongWritable;
-import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapred.Counters;
 import org.apache.hadoop.mapred.FileInputFormat;
 import org.apache.hadoop.mapred.FileOutputFormat;
 import org.apache.hadoop.mapred.JobClient;
 import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapred.RunningJob;
+
+
 
 //Main class that sets up which classes are the mappers and which classes are the reducers
 public class PageRank {
-	
-	public static ArrayList<Integer> blockings = generateBlockGroupings();
+
+	// compute filter parameters for netid bce25
+	public static final double fromNetID = 0.52; // 52 is 25 reversed
+	public static final double rejectMin = 0.9 * fromNetID;
+	public static final double rejectLimit = rejectMin + 0.01;
+
+	// Stores all the nodes in the entire graph
+	public static HashMap<Long, Node> nodes = new HashMap<Long, Node>();
+
+	// Key value pairs of blockID (long) to List of nodes in that block
+	public static HashMap<Long, List<Long>> blocks = new HashMap<Long, List<Long>>();
+
+	public static ArrayList<Long> blockings = generateBlockGroupings();
+
+	protected static enum MyCounters {
+		RESIDUAL_ERROR, NUM_ITERATIONS
+	}
 
 	// args represents the paths of the input file and output file
 	public static void main(String[] args) throws IOException {
@@ -27,8 +52,11 @@ public class PageRank {
 			System.exit(-1);
 		}
 
-		// data preprocessing
-		// change edges.txt and blocks.txt into nodes.txt
+		dataPreprocessing();
+		System.out.println("Done preprocessing");
+
+		// *******************************************************************
+		// Constructing the mapreduce job
 
 		JobConf conf = new JobConf(PageRank.class);
 		conf.setJobName("PageRank");
@@ -39,15 +67,112 @@ public class PageRank {
 		conf.setMapperClass(PageRankMapper.class);
 		conf.setReducerClass(PageRankReducer.class);
 
+		conf.setMapOutputKeyClass(LongWritable.class);
+		conf.setMapOutputValueClass(NodeWritable.class);
 		conf.setOutputKeyClass(LongWritable.class);
-		conf.setOutputValueClass(LongWritable.class);
-
-		JobClient.runJob(conf);
+		conf.setOutputValueClass(FloatWritable.class);
+		int numRounds = 0;
+		while (true) {
+			numRounds++;
+			RunningJob r = JobClient.runJob(conf);
+			Counters c = r.getCounters();
+			long rError = c.getCounter(MyCounters.RESIDUAL_ERROR);
+			long totalIterations = c.getCounter(MyCounters.NUM_ITERATIONS);
+			System.out.println("average number of iterations " + (totalIterations / 68.0));
+			System.out.println("error is " + rError);
+			if((Math.abs(rError) < (100)) || numRounds > 3){
+				System.out.println(rError);
+				break;
+			}
+			updateNodesTxt();
+		}
+	}
+	
+	public static void updateNodesTxt(){
+		System.out.println("updating previous nodes file");
+		File previousNodes = new File("./input/nodes.txt");
+		deleteFile(previousNodes);
+		File newNodes = new File("./output/part-00000");
+		newNodes.renameTo(new File("./input/nodes.txt"));
+		deleteFile(new File("./output"));
+	}
+	
+	public static void deleteFile(File f){
+		if(!f.exists()) return;
+		if(f.isDirectory()){
+			for(File subFile: f.listFiles()){
+				deleteFile(subFile);
+			}
+		}
+		f.delete();
 	}
 
-	public static ArrayList<Integer> generateBlockGroupings() {
-		ArrayList<Integer> blockID = new ArrayList<Integer>();
-		blockID.add(10328);
+	public static void dataPreprocessing() throws NumberFormatException,
+			IOException {
+
+		BufferedReader fromEdges = new BufferedReader(new FileReader(
+				"./givenData/edges2.txt"));
+		String inLine;
+		String delims = "[ ]+";
+		int numberOfNodes = 685230;
+		while ((inLine = fromEdges.readLine()) != null) {
+			String[] tokens = inLine.split(delims);
+			double floating = Double.parseDouble(tokens[1]);
+			long source = Long.parseLong(tokens[2]);
+			long destination = Long.parseLong(tokens[3]);
+
+			if (selectInputLine(floating)) {
+
+				if (nodes.get(source) == null) {
+					Node create = initializeNode(source, numberOfNodes);
+					nodes.put(source, create);
+
+				}
+
+				long destinationBlockID = blockIDofNode(destination,
+						blockings.size() / 2, blockings.size() / 4);
+
+				if (destinationBlockID != nodes.get(source).getblockID()) {
+					nodes.get(source).getBoundaryVertices().add(destination);
+				}
+
+				nodes.get(source).setNumOutEdges(
+						nodes.get(source).getNumOutEdges() + 1);
+
+				if (nodes.get(destination) == null) {
+					Node create = initializeNode(destination, numberOfNodes);
+					nodes.put(destination, create);
+				}
+
+				nodes.get(destination).getInGoingEdges().add(source);
+
+			}
+		}
+		fromEdges.close();
+
+		writeToNodestxt(nodes);
+
+	}
+
+	public static boolean selectInputLine(double x) {
+		return (((x >= rejectMin) && (x < rejectLimit)) ? false : true);
+	}
+
+	public static Node initializeNode(long nodeID, int numberOfNodes) {
+		float pagerank = 1 / (float) (numberOfNodes);
+		long nID = nodeID;
+		long bID = blockIDofNode(nodeID);
+		int nOutEdges = 0;
+		ArrayList<Long> iEdges = new ArrayList<Long>();
+		ArrayList<Long> bVertices = new ArrayList<Long>();
+		Node create = new Node(pagerank, nID, bID, nOutEdges, iEdges, bVertices);
+
+		return create;
+	}
+
+	public static ArrayList<Long> generateBlockGroupings() {
+		ArrayList<Long> blockID = new ArrayList<Long>();
+		blockID.add(new Long(10328));
 		blockID.add(blockID.get(0) + 10045);
 		blockID.add(blockID.get(1) + 10256);
 		blockID.add(blockID.get(2) + 10016);
@@ -119,16 +244,21 @@ public class PageRank {
 		return blockID;
 	}
 
-	public static Long blockIDofNode(long nodeID){
-		return blockIDofNode(nodeID, blockings.size()/2, blockings.size()/4);
+	public static Long blockIDofNode(long nodeID) {
+		return blockIDofNode(nodeID, blockings.size() / 2, blockings.size() / 4);
 	}
-	
+
 	public static Long blockIDofNode(long nodeID, int index, int margin) {
 
-		if (margin == 0) margin = 1;
-		else { margin = (int) Math.floor(margin / 2);}
+		if (margin == 0)
+			margin = 1;
+		else {
+			margin = (int) Math.floor(margin / 2);
+		}
 
-		if (index == 0 || index == blockings.size() || (nodeID <= blockings.get(index) && nodeID > blockings
+		if (index == 0
+				|| index == blockings.size()
+				|| (nodeID <= blockings.get(index) && nodeID > blockings
 						.get(index - 1))) {
 			return (long) (index);
 		}
@@ -141,6 +271,70 @@ public class PageRank {
 			return blockIDofNode(nodeID, newIndex, margin);
 		}
 
+	}
+
+	public static void writeToNodestxt(HashMap<Long, Node> mapOfNodes)
+			throws FileNotFoundException {
+		PrintWriter out = new PrintWriter("./input/nodes.txt");
+
+		for (Node n : mapOfNodes.values()) {
+			long nID = n.getNodeID();
+			float pr = n.getPageRank();
+			long bID = n.getblockID();
+			int numOutEdge = n.getNumOutEdges();
+
+			String outLine = nID + "	" + pr + "|" + bID + "|" + numOutEdge
+					+ "|";
+
+			ArrayList<Long> inGoingEdges = n.getInGoingEdges();
+
+			for (Long id : inGoingEdges) {
+				outLine = outLine + id + " ";
+			}
+			if (inGoingEdges.size() > 0) {
+				outLine = outLine.substring(0, outLine.length() - 1) + "|";
+			} else {
+				outLine += " |";
+			}
+
+			ArrayList<Long> boundaryV = n.getBoundaryVertices();
+
+			for (Long id : boundaryV) {
+				outLine = outLine + id + " ";
+			}
+			if (boundaryV.size() > 0) {
+				outLine = outLine.substring(0, outLine.length() - 1) + "|";
+			} else {
+				outLine += " |";
+			}
+
+			out.println(outLine);
+		}
+		out.close();
+	}
+
+	public static void readFromNodestxt() throws NumberFormatException,
+			IOException {
+
+		BufferedReader fromNodes = new BufferedReader(new FileReader(
+				"./input/nodes.txt"));
+
+		String inLine;
+		String attributeDelim = "[|]";
+		String listDelim = "[ ]";
+
+		while ((inLine = fromNodes.readLine()) != null) {
+			String[] tokens = inLine.split(attributeDelim);
+
+			long nodeID = Long.parseLong(tokens[0]);
+			float pagerank = Float.parseFloat(tokens[1]);
+			long blockID = Long.parseLong(tokens[2]);
+			int numOut = Integer.parseInt(tokens[3]);
+			String[] inEdges = tokens[4].split(listDelim);
+			String[] boundaryEdges = tokens[5].split(listDelim);
+
+		}
+		fromNodes.close();
 	}
 
 }

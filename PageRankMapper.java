@@ -12,36 +12,37 @@ import org.apache.hadoop.mapred.OutputCollector;
 import org.apache.hadoop.mapred.Reporter;
 
 public class PageRankMapper extends MapReduceBase 
-	implements Mapper<LongWritable, Text, LongWritable, Node>{
+	implements Mapper<LongWritable, Text, LongWritable, NodeWritable>{
 	
 	public void map(LongWritable key, Text value,
-		      OutputCollector<LongWritable, Node> output, Reporter reporter)
+		      OutputCollector<LongWritable, NodeWritable> output, Reporter reporter)
 		      throws IOException {
 		    
 		    String line = value.toString();
-		    String[] data = line.split("|");
+		    String[] splitData = line.split("\\t");
+		    Integer nodeID = Integer.parseInt(splitData[0]);
+		    String[] data = splitData[1].split("\\|");
 		    //nodeID, pageRank, blockID, numOutEdges, ingoingEdgeId's, boundaryVertices
-		    Integer nodeID = Integer.parseInt(data[0]);
-		    Long pageRank = Long.parseLong(data[1]);
-		    Integer blockID = Integer.parseInt(data[2]);
-		    Integer numOutEdges = Integer.parseInt(data[3]);
-		    String inGoingEdgesString = data[4];
+		    Float pageRank = Float.parseFloat(data[0]);
+		    Integer blockID = Integer.parseInt(data[1]);
+		    Integer numOutEdges = Integer.parseInt(data[2]);
+		    String inGoingEdgesString = data[3];
 		    String[] inGoingEdgeIDs = inGoingEdgesString.split("\\s+");
 		    ArrayList<Long> inGoingEdges = new ArrayList<Long>();
 		    for(String id: inGoingEdgeIDs){
 		    	inGoingEdges.add(Long.parseLong(id));
 		    }
-		    String[] boundaryVertexString = data[5].split("\\s+");
+		    String[] boundaryVertexString = data[4].split("\\s+");
 		    ArrayList<Long> boundaryVertices = new ArrayList<Long>();
 		    for(String bV: boundaryVertexString){
 		    	Long boundaryVertexID = Long.parseLong(bV);
 		    	boundaryVertices.add(boundaryVertexID);
 		    }
 		    
-		    Node n = new Node(pageRank, nodeID, blockID, numOutEdges, inGoingEdges, boundaryVertices);
+		    NodeWritable n = new NodeWritable(pageRank, nodeID, blockID, numOutEdges, inGoingEdges, boundaryVertices);
 		    output.collect(new LongWritable(blockID), n);
 		    for(Long boundaryVertexID: n.getBoundaryVertices()){
-		    	Long boundaryVertexBlock = PageRank.blockIDofNode(nodeID);
+		    	Long boundaryVertexBlock = PageRank.blockIDofNode(boundaryVertexID);
 		    	output.collect(new LongWritable(boundaryVertexBlock), n);
 		    }
 		    
